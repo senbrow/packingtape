@@ -1,0 +1,459 @@
+# Copyright (c) 2015, Sean Burau
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright
+#       notice, this list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#     * The name(s) of the copyright holder(s) may not be used to endorse or
+#       promote products derived from this software without specific prior
+#       written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+import argparse
+import os
+import os.path
+import re
+import sys
+
+import clang
+import clang.cindex
+
+supportedFieldTypeNames = [
+        "uint8_t",
+        "uint16_t",
+        "uint32_t"]
+
+
+def supportedFieldTypesString():
+    return ", ".join(supportedFieldTypeNames)
+
+
+def cursorName(cursor):
+    return cursor.spelling or cursor.displayname
+
+
+def cursorLocation(cursor):
+    l = cursor.location
+    if l:
+        return os.path.abspath(l.file.name) \
+                + ":" + str(l.line) \
+                + ":" + str(l.column)
+    else:
+        return "<Location not found>"
+
+
+def getArrayElementType(arrayType):
+    if arrayType.kind != clang.cindex.TypeKind.CONSTANTARRAY:
+        raise Exception("Expected CONSTANTARRAY")
+    else:
+        elementType = arrayType.get_array_element_type()
+        if elementType.kind == clang.cindex.TypeKind.UNEXPOSED:
+            elementType = elementType.get_canonical()
+        return elementType
+
+
+def typeIsSupported(type):
+    if type.kind == clang.cindex.TypeKind.CONSTANTARRAY:
+        type = getArrayElementType(type)
+
+    if type.kind == clang.cindex.TypeKind.TYPEDEF:
+        spelling = type.spelling
+
+        if spelling in supportedFieldTypeNames:
+            return True
+        else:
+            return checkIfTypeIsEligible(type.get_declaration())
+    else:
+        return False
+
+
+def fieldDeclarations(cursor):
+    clist = cursor.get_children()
+    return [c for c in clist if c.kind == clang.cindex.CursorKind.FIELD_DECL]
+
+
+def checkIfStructTypesAreSupported(clangCursor):
+    name = cursorName(clangCursor)
+    fields = fieldDeclarations(clangCursor)
+
+    for field in fields:
+        type = field.type
+        canonicalType = type.get_canonical()
+
+        if canonicalType.kind == clang.cindex.TypeKind.CONSTANTARRAY:
+            type = getArrayElementType(type)
+            canonicalType = type.get_canonical()
+
+        if canonicalType.kind == clang.cindex.TypeKind.RECORD:
+            checkIfStructTypesAreSupported(type.get_declaration())
+        elif not typeIsSupported(type):
+            raise Exception(
+                    cursorLocation(field) +
+                    " struct " + name +
+                    ": unsupported type '" + type.spelling +
+                    "' for member '" + cursorName(field) + "'. " +
+                    "Types must resolve to: " + supportedFieldTypesString())
+
+    if len(fields) == 0:
+        raise Exception(
+                cursorLocation(clangCursor) +
+                " struct " + name + ": empty struct")
+
+
+def getSerializedStructSize(structCursor):
+    totalSize = 0
+
+    for field in fieldDeclarations(structCursor):
+        canonicalType = field.type.get_canonical()
+
+        numberOfFieldElements = 1
+        if canonicalType.kind == clang.cindex.TypeKind.CONSTANTARRAY:
+            numberOfFieldElements = canonicalType.get_array_size()
+
+        if canonicalType.kind == clang.cindex.TypeKind.RECORD:
+            fieldSize = getSerializedStructSize(field.type.get_declaration())
+        else:
+            fieldSize = canonicalType.get_size()
+
+        totalSize = totalSize + fieldSize * numberOfFieldElements
+
+    return totalSize
+
+
+def printDeserializationCodeForSimpleType(leftHandSideString, type, dataVar):
+    typeSize = type.get_size()
+    typeName = type.spelling
+
+    print "    memcpy(&(" + leftHandSideString + \
+        "), " + dataVar + \
+        ", sizeof(" + typeName + "));"
+    if typeSize == 1:
+        pass
+    elif typeSize == 2:
+        print "    " + \
+                leftHandSideString + " = ntohs(" + leftHandSideString + ");"
+    elif typeSize == 4:
+        print "    " + \
+                leftHandSideString + " = ntohl(" + leftHandSideString + ");"
+    else:
+        raise Exception("Unexpected type size of " + str(typeSize))
+
+    print "    " + dataVar + " += sizeof(" + typeName + ");"
+    print ""
+
+
+def printDeserializationCodeForCursor(
+        fieldCursor,
+        dataVarName,
+        varPrefix,
+        prefixIsPointer):
+    canonicalType = fieldCursor.type.get_canonical()
+
+    if prefixIsPointer:
+        fieldOperator = "->"
+    else:
+        fieldOperator = "."
+
+    if fieldCursor.kind == clang.cindex.CursorKind.STRUCT_DECL:
+        for field in fieldDeclarations(fieldCursor):
+            printDeserializationCodeForCursor(
+                    field,
+                    dataVarName,
+                    varPrefix,
+                    prefixIsPointer)
+    elif fieldCursor.kind == clang.cindex.CursorKind.FIELD_DECL:
+        leftHandSideString = \
+            varPrefix + fieldOperator + cursorName(fieldCursor)
+
+        if canonicalType.kind == clang.cindex.TypeKind.RECORD:
+            printDeserializationCodeForCursor(
+                    canonicalType.get_declaration(),
+                    dataVarName,
+                    leftHandSideString,
+                    False)
+        else:
+            if canonicalType.kind == clang.cindex.TypeKind.CONSTANTARRAY:
+                elementType = getArrayElementType(fieldCursor.type)
+                numberOfFieldElements = fieldCursor.type.get_array_size()
+
+                if elementType.kind == clang.cindex.TypeKind.RECORD:
+                    for i in range(fieldCursor.type.get_array_size()):
+                        printDeserializationCodeForCursor(
+                                elementType.get_declaration(),
+                                dataVarName,
+                                leftHandSideString + "[" + str(i) + "]",
+                                False)
+                else:
+                    for i in range(fieldCursor.type.get_array_size()):
+                        printDeserializationCodeForSimpleType(
+                                leftHandSideString + "[" + str(i) + "]",
+                                elementType,
+                                dataVarName)
+            else:
+                printDeserializationCodeForSimpleType(
+                        leftHandSideString,
+                        fieldCursor.type,
+                        dataVarName)
+    else:
+        raise Exception("Unexpected cursor " + str(fieldCursor))
+
+
+def printDeserializationImplementation(structCursor):
+    serializedSizeConstant = getSerializedSizeConstantString(structCursor)
+
+    print "// **** AUTOMATICALLY GENERATED, DO NOT EDIT ****"
+    print getDeserializationFunctionDeclarationString(structCursor), "{"
+    print "   if(data == NULL) {"
+    print "       return -1;"
+    print "   }else if(dataLength < " + serializedSizeConstant + ") {"
+    print "       return -2;"
+    print "   }"
+
+    printDeserializationCodeForCursor(structCursor, "data", "output", True)
+
+    print "    return " + getSerializedSizeConstantString(structCursor) + ";"
+    print "}"
+    print ""
+
+
+def printSerializationCodeForSimpleType(
+        rhs,
+        type,
+        dataVar):
+    typeSize = type.get_size()
+    typeName = type.spelling
+
+    if typeSize == 1:
+        pass
+    elif typeSize == 2:
+        rhs = "htons(" + rhs + ")"
+    elif typeSize == 4:
+        rhs = "htonl(" + rhs + ")"
+    else:
+        raise Exception("Unexpected type size of " + str(typeSize))
+
+    print "    memcpy(" + dataVar + ", " + rhs + ", sizeof(" + typeName + "));"
+    print "    " + dataVar + " += sizeof(" + typeName + ");"
+    print ""
+
+
+def printSerializationCodeForCursor(
+        fieldCursor,
+        dataVarName,
+        varPrefix,
+        prefixIsPointer):
+    canonicalType = fieldCursor.type.get_canonical()
+
+    if prefixIsPointer:
+        fieldOperator = "->"
+    else:
+        fieldOperator = "."
+
+    if fieldCursor.kind == clang.cindex.CursorKind.STRUCT_DECL:
+        for field in fieldDeclarations(fieldCursor):
+            printSerializationCodeForCursor(
+                    field,
+                    dataVarName,
+                    varPrefix,
+                    prefixIsPointer)
+    elif fieldCursor.kind == clang.cindex.CursorKind.FIELD_DECL:
+        rightHandSideString = \
+            varPrefix + fieldOperator + cursorName(fieldCursor)
+
+        if canonicalType.kind == clang.cindex.TypeKind.RECORD:
+            printSerializationCodeForCursor(
+                    canonicalType.get_declaration(),
+                    dataVarName,
+                    rightHandSideString,
+                    False)
+        else:
+            if canonicalType.kind == clang.cindex.TypeKind.CONSTANTARRAY:
+                elementType = getArrayElementType(fieldCursor.type)
+                numberOfFieldElements = fieldCursor.type.get_array_size()
+
+                if elementType.kind == clang.cindex.TypeKind.RECORD:
+                    for i in range(fieldCursor.type.get_array_size()):
+                        printSerializationCodeForCursor(
+                                elementType.get_declaration(),
+                                dataVarName,
+                                rightHandSideString + "[" + str(i) + "]",
+                                False)
+                else:
+                    for i in range(fieldCursor.type.get_array_size()):
+                        printSerializationCodeForSimpleType(
+                                rightHandSideString + "[" + str(i) + "]",
+                                elementType,
+                                dataVarName)
+            else:
+                printSerializationCodeForSimpleType(
+                        rightHandSideString,
+                        fieldCursor.type,
+                        dataVarName)
+    else:
+        raise Exception("Unexpected cursor " + str(fieldCursor))
+
+
+def printSerializationImplementation(structCursor):
+    serializedSizeConstant = getSerializedSizeConstantString(structCursor)
+
+    print "// **** AUTOMATICALLY GENERATED, DO NOT EDIT ****"
+    print getSerializationFunctionDeclarationString(structCursor) + " {"
+    print "    if(outputBuffer == NULL) {"
+    print "        return -1;"
+    print "    }else if(outputBufferLength < " + serializedSizeConstant + ") {"
+    print "        return -2;"
+    print "    }"
+    print ""
+
+    printSerializationCodeForCursor(
+            structCursor,
+            "outputBuffer",
+            "source",
+            True)
+
+    print "    return " + getSerializedSizeConstantString(structCursor) + ";"
+    print "}"
+    print ""
+
+
+def printImplementation(structDeclarationCursors):
+    for structCursor in structDeclarationCursors:
+        print "const size_t " + getSerializedSizeConstantString(structCursor) \
+                + " = " + str(getSerializedStructSize(structCursor)) + ";"
+    print ""
+
+    for structCursor in structDeclarationCursors:
+        printSerializationImplementation(structCursor)
+
+    for structCursor in structDeclarationCursors:
+        printDeserializationImplementation(structCursor)
+
+
+def getSerializedSizeConstantString(structCursor):
+    return cursorName(structCursor).upper() + "_SERIALIZED_SIZE"
+
+
+def getSerializationFunctionDeclarationString(structCursor):
+    return "size_t serialize_" + cursorName(structCursor) \
+            + "(const struct " + cursorName(structCursor) + " *source, "\
+            + "uint8_t *outputBuffer, size_t outputBufferLength)"
+
+
+def getDeserializationFunctionDeclarationString(structCursor):
+    return "size_t deserialize_" + cursorName(structCursor) \
+            + "(const uint8_t *data, size_t dataLength, " \
+            + "struct " + cursorName(structCursor) + " *output)"
+
+
+def printHeader(structDeclarationCursors):
+    for structCursor in structDeclarationCursors:
+        print "extern const size_t " + \
+                getSerializedSizeConstantString(structCursor) + ";"
+    print ""
+    for structCursor in structDeclarationCursors:
+        print getSerializationFunctionDeclarationString(structCursor) + ";"
+    print ""
+    for structCursor in structDeclarationCursors:
+        print getDeserializationFunctionDeclarationString(structCursor) + ";"
+    print ""
+
+
+def printForwardDeclarations(structDeclarationCursors):
+    for structCursor in structDeclarationCursors:
+        print "struct", cursorName(structCursor) + ";"
+    print ""
+
+
+def processInput(options):
+    clang.cindex.Config.set_library_path(options['libclangPath'])
+
+    index = clang.cindex.Index.create()
+    translationUnit = index.parse(options['inputFile'])
+
+    eligibleStructs = []
+    whitelistStructRegex = re.compile(options['whitelist'])
+
+    # Check all candidate structs before generating any output
+    for child in translationUnit.cursor.get_children():
+        if child.kind == clang.cindex.CursorKind.STRUCT_DECL and \
+                whitelistStructRegex.match(cursorName(child)):
+            checkIfStructTypesAreSupported(child)
+            eligibleStructs.append(child)
+
+    # If we've made it this far, all candidate structs are eligible.
+    print options['preamble']
+    print ""
+
+    if options['forward_declarations']:
+        printForwardDeclarations(eligibleStructs)
+    if options['header']:
+        printHeader(eligibleStructs)
+    if options['implementation']:
+        printImplementation(eligibleStructs)
+
+
+def getParsedOptionsDictionary():
+    defaultPreambleString = "#include <stdint.h>\n#include <stdlib.h>"
+    defaultWhitelistString = "[^_].*"
+    parser = argparse.ArgumentParser(
+            description="""
+Generates network-order C struct field (de)serialization code.
+Target structs must only contain fields that resolve to uint8_t, uint16_t, or
+uint32_t.
+Target structs may contain other structs and fixed-length arrays
+""")
+
+    parser.add_argument(
+            '--whitelist',
+            type=str,
+            default=defaultWhitelistString,
+            help='Python regular expression to determine which structs to ' +
+            'target for code generation (default: any ' +
+            'non-leading-underscore struct). Note that any structs ' +
+            '#included in the inputFile may be matched by this parameter')
+    parser.add_argument(
+            '--forward-declarations',
+            action='store_true',
+            help='Print forward type declarations for all target structs')
+    parser.add_argument(
+            '--header',
+            action='store_true',
+            help='Print function declarations')
+    parser.add_argument(
+            '--implementation',
+            action='store_true',
+            help='Print function implementations')
+    parser.add_argument(
+            '--preamble',
+            default=defaultPreambleString,
+            help='String to print before any other output. (default: "' +
+            defaultPreambleString + '")')
+    parser.add_argument(
+            'inputFile',
+            help='C file to read struct definitions from')
+
+    arguments = parser.parse_args()
+    argumentDictionary = vars(arguments)
+    argumentDictionary['libclangPath'] = \
+        os.getenv('PYTHON_LIBCLANG_PATH', os.getcwd())
+
+    return argumentDictionary
+
+
+if __name__ == "__main__":
+    processInput(getParsedOptionsDictionary())
