@@ -269,11 +269,12 @@ size_t serialize_Game(const struct Game *source, uint8_t *outputBuffer, size_t o
 
 // **** AUTOMATICALLY GENERATED, DO NOT EDIT ****
 size_t deserialize_Player(const uint8_t *data, size_t dataLength, struct Player *output) {
-   if(!data) {
-       return -1;
-   }else if(dataLength < PLAYER_SERIALIZED_SIZE) {
-       return -2;
-   }
+    if(!data) {
+        return -1;
+    }else if(dataLength < PLAYER_SERIALIZED_SIZE) {
+        return -2;
+    }
+    
     memcpy(&(output->height), data, sizeof(uint8_t));
     data += sizeof(uint8_t);
 
@@ -294,11 +295,12 @@ size_t deserialize_Player(const uint8_t *data, size_t dataLength, struct Player 
 
 // **** AUTOMATICALLY GENERATED, DO NOT EDIT ****
 size_t deserialize_Team(const uint8_t *data, size_t dataLength, struct Team *output) {
-   if(!data) {
-       return -1;
-   }else if(dataLength < TEAM_SERIALIZED_SIZE) {
-       return -2;
-   }
+    if(!data) {
+        return -1;
+    }else if(dataLength < TEAM_SERIALIZED_SIZE) {
+        return -2;
+    }
+    
     memcpy(&(output->players[0].height), data, sizeof(uint8_t));
     data += sizeof(uint8_t);
 
@@ -349,11 +351,12 @@ size_t deserialize_Team(const uint8_t *data, size_t dataLength, struct Team *out
 
 // **** AUTOMATICALLY GENERATED, DO NOT EDIT ****
 size_t deserialize_Game(const uint8_t *data, size_t dataLength, struct Game *output) {
-   if(!data) {
-       return -1;
-   }else if(dataLength < GAME_SERIALIZED_SIZE) {
-       return -2;
-   }
+    if(!data) {
+        return -1;
+    }else if(dataLength < GAME_SERIALIZED_SIZE) {
+        return -2;
+    }
+    
     memcpy(&(output->timeRemaining), data, sizeof(uint32_t));
     output->timeRemaining = ntohl(output->timeRemaining);
     data += sizeof(uint32_t);
