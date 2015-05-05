@@ -225,6 +225,7 @@ def printDeserializationImplementation(structCursor):
     print "    }else if(dataLength < " + serializedSizeConstant + ") {"
     print "        return -2;"
     print "    }"
+    print ""
 
     printDeserializationCodeForCursor(structCursor, "data", "output", True)
 
