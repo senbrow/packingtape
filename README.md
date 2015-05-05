@@ -1,5 +1,5 @@
 # packingtape
-Generates serialization and deserialization code for existing C structs.
+Tool for generating serialization and deserialization code for C structs.
 
 ## Dependencies
 [clang](https://github.com/llvm-mirror/clang/tree/master/bindings/python)
