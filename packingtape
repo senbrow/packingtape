@@ -220,11 +220,11 @@ def printDeserializationImplementation(structCursor):
 
     print "// **** AUTOMATICALLY GENERATED, DO NOT EDIT ****"
     print getDeserializationFunctionDeclarationString(structCursor), "{"
-    print "   if(!data) {"
-    print "       return -1;"
-    print "   }else if(dataLength < " + serializedSizeConstant + ") {"
-    print "       return -2;"
-    print "   }"
+    print "    if(!data) {"
+    print "        return -1;"
+    print "    }else if(dataLength < " + serializedSizeConstant + ") {"
+    print "        return -2;"
+    print "    }"
 
     printDeserializationCodeForCursor(structCursor, "data", "output", True)
 
