@@ -5,7 +5,7 @@ Generates serialization and deserialization code for existing C structs.
 [clang](https://github.com/llvm-mirror/clang/tree/master/bindings/python)
 
 ## Disclaimer
-This tool is currently in the "quick weekend project" stage of development; it may eat your laundry.
+This tool is currently in the "quick weekend project" stage of development. It may eat your laundry.
 
 ## Example
 Given the following ```game.h``` C header file:
