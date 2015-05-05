@@ -1,3 +1,5 @@
+#!/usr/bin/python
+
 # Copyright (c) 2015, Sean Burau
 # All rights reserved.
 #
@@ -218,7 +220,7 @@ def printDeserializationImplementation(structCursor):
 
     print "// **** AUTOMATICALLY GENERATED, DO NOT EDIT ****"
     print getDeserializationFunctionDeclarationString(structCursor), "{"
-    print "   if(data == NULL) {"
+    print "   if(!data) {"
     print "       return -1;"
     print "   }else if(dataLength < " + serializedSizeConstant + ") {"
     print "       return -2;"
@@ -239,11 +241,13 @@ def printSerializationCodeForSimpleType(
     typeName = type.spelling
 
     if typeSize == 1:
-        pass
+        rhs = "&(" + rhs + ")"
     elif typeSize == 2:
-        rhs = "htons(" + rhs + ")"
+        print "    temporary16 = htons(" + rhs + ");"
+        rhs = "&temporary16"
     elif typeSize == 4:
-        rhs = "htonl(" + rhs + ")"
+        print "    temporary32 = htonl(" + rhs + ");"
+        rhs = "&temporary32"
     else:
         raise Exception("Unexpected type size of " + str(typeSize))
 
@@ -313,7 +317,10 @@ def printSerializationImplementation(structCursor):
 
     print "// **** AUTOMATICALLY GENERATED, DO NOT EDIT ****"
     print getSerializationFunctionDeclarationString(structCursor) + " {"
-    print "    if(outputBuffer == NULL) {"
+    print "    uint32_t temporary32;"
+    print "    uint16_t temporary16;"
+    print ""
+    print "    if(!outputBuffer) {"
     print "        return -1;"
     print "    }else if(outputBufferLength < " + serializedSizeConstant + ") {"
     print "        return -2;"
@@ -408,14 +415,21 @@ def processInput(options):
 
 
 def getParsedOptionsDictionary():
-    defaultPreambleString = "#include <stdint.h>\n#include <stdlib.h>"
+    defaultPreambleString = \
+"""#include <stdint.h>
+#include <string.h>
+#include <arpa/inet.h>
+"""
     defaultWhitelistString = "[^_].*"
     parser = argparse.ArgumentParser(
             description="""
 Generates network-order C struct field (de)serialization code.
+
 Target structs must only contain fields that resolve to uint8_t, uint16_t, or
-uint32_t.
-Target structs may contain other structs and fixed-length arrays
+uint32_t. Target structs may contain other structs and fixed-length arrays.
+
+To use this tool, you must set PYTHON_LIBCLANG_PATH to a path containing
+libclang.
 """)
 
     parser.add_argument(
@@ -440,9 +454,7 @@ Target structs may contain other structs and fixed-length arrays
             help='Print function implementations')
     parser.add_argument(
             '--preamble',
-            default=defaultPreambleString,
-            help='String to print before any other output. (default: "' +
-            defaultPreambleString + '")')
+            help='String to print before any other output.')
     parser.add_argument(
             'inputFile',
             help='C file to read struct definitions from')
@@ -451,6 +463,11 @@ Target structs may contain other structs and fixed-length arrays
     argumentDictionary = vars(arguments)
     argumentDictionary['libclangPath'] = \
         os.getenv('PYTHON_LIBCLANG_PATH', os.getcwd())
+
+    if not "preamble" in argumentDictionary:
+        argumentDictionary["preamble"] = \
+                defaultPreambleString + '\n#include "' + \
+                argumentDictionary['inputFile'] + '"'
 
     return argumentDictionary
 
